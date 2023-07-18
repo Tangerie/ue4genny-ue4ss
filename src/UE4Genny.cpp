@@ -3,120 +3,44 @@
 #include <thread>
 #include <unordered_map>
 
-#include "UObject/Class.h"
-#include "UObject/EnumProperty.h"
-#include "UObject/UObjectArray.h"
-#include "UObject/UnrealType.h"
-
 #include <Windows.h>
 
 #include "Genny.hpp"
+#include "UE4Genny.hpp"
 #include "kanan/core/Scan.hpp"
 #include "kanan/core/String.hpp"
 #include "kanan/core/Utility.hpp"
+#include <Unreal/Property/NumericPropertyTypes.hpp>
+#include <Unreal/Property/FBoolProperty.hpp>
+#include <Unreal/Property/FNameProperty.hpp>
+#include <Unreal/Property/FEnumProperty.hpp>
+#include <Unreal/Property/FStrProperty.hpp>
 
-#include "UE4Genny.hpp"
-#include CONFIG_HPP
-
-FUObjectArray* get_GUObjectArray() {
-    static FUObjectArray* obj_array{};
-
-    if (obj_array == nullptr) {
-        OutputDebugString(L"Finding GUObjectArray...");
-
-        auto lea = kanan::scan(GUOBJECTARRAY_PAT);
-
-        if (!lea) {
-            OutputDebugString(L"Failed to find GUObjectArray!");
-            return nullptr;
-        }
-
-        obj_array = (FUObjectArray*)kanan::rel_to_abs(*lea + 3);
-
-        OutputDebugString(L"Found GUObjectArray!");
-    }
-
-    return obj_array;
-}
-
-std::string get_full_name(UObjectBase* obj) {
+std::string get_full_name(UObject* obj) {
+    return narrow(obj->GetFullName());
     auto c = obj->GetClass();
-
-    if (c == nullptr) {
-        return "null";
-    }
-
-    auto obj_name = narrow(obj->GetFName());
-
-    for (auto outer = obj->GetOuter(); outer != nullptr; outer = outer->GetOuter()) {
-        obj_name = narrow(outer->GetFName()) + '.' + obj_name;
-    }
-
-    return narrow(c->GetFName()) + ' ' + obj_name;
-}
-
-UObjectBase* find_uobject(const char* obj_full_name) {
-    static std::unordered_map<std::string, UObjectBase*> obj_map{};
-
-    if (auto search = obj_map.find(obj_full_name); search != obj_map.end()) {
-        return search->second;
-    }
-
-    auto obj_array = get_GUObjectArray();
-
-    for (auto i = 0; i < obj_array->GetObjectArrayNum(); ++i) {
-        if (auto obj_item = obj_array->IndexToObject(i)) {
-            if (auto obj_base = obj_item->Object) {
-                if (get_full_name(obj_base) == obj_full_name) {
-                    obj_map[obj_full_name] = obj_base;
-                    return obj_base;
-                }
-            }
-        }
-    }
-
-    return nullptr;
-}
-
-UObjectBase* find_uobject(size_t obj_full_name_hash) {
-    static std::unordered_map<size_t, UObjectBase*> obj_map{};
-
-    if (auto search = obj_map.find(obj_full_name_hash); search != obj_map.end()) {
-        return search->second;
-    }
-
-    auto obj_array = get_GUObjectArray();
-
-    for (auto i = 0; i < obj_array->GetObjectArrayNum(); ++i) {
-        if (auto obj_item = obj_array->IndexToObject(i)) {
-            if (auto obj_base = obj_item->Object) {
-                if (kanan::hash(get_full_name(obj_base)) == obj_full_name_hash) {
-                    obj_map[obj_full_name_hash] = obj_base;
-                    return obj_base;
-                }
-            }
-        }
-    }
-
-    return nullptr;
 }
 
 std::string narrow(const FString& fstr) {
-    auto& char_array = fstr.GetCharArray();
-    return kanan::narrow(char_array.Num() ? char_array.GetData() : L"");
+    auto char_array = fstr.GetCharArray();
+    return narrow(char_array);
 }
 
 std::string narrow(const FName& fname) {
     return narrow(fname.ToString());
 }
 
+std::string narrow(const std::wstring& wstr) {
+    return to_string(wstr);
+}
+
 void generate_uenum(genny::Namespace* g, UEnum* uenum) {
-    auto enum_name = narrow(uenum->GetFName());
+    auto enum_name = narrow(uenum->GetNamePrivate());
     enum_name = enum_name.substr(enum_name.find_last_of(':') + 1);
     genny::Enum* genny_enum{};
 
     auto enum_class = uenum->GetClass();
-    auto enum_class_name = narrow(enum_class->GetFName());
+    auto enum_class_name = narrow(enum_class->GetNamePrivate());
 
     switch (uenum->GetCppForm()) {
     case UEnum::ECppForm::EnumClass:
@@ -124,7 +48,7 @@ void generate_uenum(genny::Namespace* g, UEnum* uenum) {
         break;
     case UEnum::ECppForm::Namespaced: {
         auto ns_name = enum_name;
-        enum_name = narrow(uenum->CppType);
+        enum_name = narrow(uenum->GetCppType());
         enum_name = enum_name.substr(enum_name.find_last_of(':') + 1);
 
         if (enum_name.empty()) {
@@ -145,8 +69,8 @@ void generate_uenum(genny::Namespace* g, UEnum* uenum) {
     }
 
     // NOTE: Must make UEnum::Names public.
-    for (auto n = 0; n < uenum->Names.Num(); ++n) {
-        auto& name = uenum->Names[n];
+    for (auto n = 0; n < uenum->GetNames().Num(); ++n) {
+        auto& name = uenum->GetNames()[n];
         auto key = narrow(name.Key);
         key = key.substr(key.find_last_of(':') + 1);
 
@@ -163,14 +87,14 @@ std::string get_fproperty_typename(FProperty* fprop) {
         auto fbyte = (FByteProperty*)fprop;
 
         // TODO: Handle FByteProperty's that are actual enums.
-        if (fbyte->Enum != nullptr) {
-            auto uenum = fbyte->Enum;
-            auto enum_name = narrow(uenum->GetFName());
+        if (fbyte->GetEnum() != nullptr) {
+            auto uenum = fbyte->GetEnum();
+            auto enum_name = narrow(uenum->GetNamePrivate());
             enum_name = enum_name.substr(enum_name.find_last_of(':') + 1);
 
             if (uenum->GetCppForm()  == UEnum::ECppForm::Namespaced) {
                 auto ns_name = enum_name;
-                enum_name = narrow(uenum->CppType);
+                enum_name = narrow(uenum->GetCppType());
                 enum_name = enum_name.substr(enum_name.find_last_of(':') + 1);
 
                 if (enum_name.empty()) {
@@ -207,23 +131,23 @@ std::string get_fproperty_typename(FProperty* fprop) {
 
         // A FieldMask of 0xFF indicates a native bool, otherwise its part of a bitfield.
         // NOTE: Must make FieldMask public.
-        if (fbool->FieldMask == 0xFF) {
+        if (fbool->GetFieldMask() == 0xFF) {
             return "bool";
         } else {
             return "uint8_t";
         }
     } else if (fprop->IsA<FObjectProperty>()) {
         auto fobj = (FObjectProperty*)fprop;
-        if (auto uclass = fobj->PropertyClass) {
-            return kanan::narrow(uclass->GetPrefixCPP()) + narrow(uclass->GetFName()) + '*';
+        if (auto uclass = fobj->GetPropertyClass()) {
+            return kanan::narrow(uclass->GetPrefixCPP()) + narrow(uclass->GetNamePrivate()) + '*';
         }
     } else if (fprop->IsA<FStructProperty>()) {
         auto fstruct = (FStructProperty*)fprop;
-        auto ustruct = fstruct->Struct;
-        return kanan::narrow(ustruct->GetPrefixCPP()) + narrow(ustruct->GetFName());
+        auto ustruct = fstruct->GetStruct();
+        return kanan::narrow(ustruct->GetPrefixCPP()) + narrow(ustruct->GetNamePrivate());
     } else if (fprop->IsA<FArrayProperty>()) {
         auto farray = (FArrayProperty*)fprop;
-        auto inner = farray->Inner;
+        auto inner = farray->GetInner();
         auto inner_typename = get_fproperty_typename(inner);
 
         if (inner_typename.empty()) {
@@ -238,12 +162,12 @@ std::string get_fproperty_typename(FProperty* fprop) {
     } else if (fprop->IsA<FEnumProperty>()) {
         auto fenum = (FEnumProperty*)fprop;
         auto uenum = fenum->GetEnum();
-        auto enum_name = narrow(uenum->GetFName());
+        auto enum_name = narrow(uenum->GetNamePrivate());
         enum_name = enum_name.substr(enum_name.find_last_of(':') + 1);
 
         if (uenum->GetCppForm() == UEnum::ECppForm::Namespaced) {
             auto ns_name = enum_name;
-            enum_name = narrow(uenum->CppType);
+            enum_name = narrow(uenum->GetCppType());
             enum_name = enum_name.substr(enum_name.find_last_of(':') + 1);
 
             if (enum_name.empty()) {
@@ -278,7 +202,7 @@ genny::Type* genny_type_for_fproperty(genny::Namespace* g, FProperty* fprop) {
         auto fbyte = (FByteProperty*)fprop;
 
         // Change the enum type to a uint8_t if necessary.
-        if (fbyte->Enum != nullptr) {
+        if (fbyte->GetEnum() != nullptr) {
             auto enum_type = ns->enum_(prop_typename);
             enum_type->type(g->type("uint8_t"));
         }
@@ -286,7 +210,7 @@ genny::Type* genny_type_for_fproperty(genny::Namespace* g, FProperty* fprop) {
         prop_type = ns->type(prop_typename);
     } else if (fprop->IsA<FArrayProperty>()) {
         auto farray = (FArrayProperty*)fprop;
-        auto inner = farray->Inner;
+        auto inner = farray->GetInner();
         auto inner_type = genny_type_for_fproperty(g, inner);
 
         if (inner_type != nullptr) {
@@ -316,24 +240,24 @@ genny::Type* genny_type_for_fproperty(genny::Namespace* g, FProperty* fprop) {
 
 void generate_fproperty(genny::Struct* s, FProperty* fprop) {
     auto ns = s->owner<genny::Namespace>();
-    auto prop_name = narrow(fprop->NamePrivate);
+    auto prop_name = narrow(fprop->GetName());
     auto prop_type = genny_type_for_fproperty(ns, fprop);
 
     if (fprop->IsA<FBoolProperty>()) {
         auto fbool = (FBoolProperty*)fprop;
 
         // A FieldMask of 0xFF indicates a native bool, otherwise its part of a bitfield.
-        if (fbool->FieldMask != 0xFF) {
+        if (fbool->GetFieldMask() != 0xFF) {
             auto bf = s->variable(prop_name)->offset(fprop->GetOffset_ForInternal());
 
-            auto mask = fbool->ByteMask;
+            auto mask = fbool->GetByteMask();
             auto offset = -1;
 
             for (; mask != 0; mask /= 2, ++offset);
 
             bf->type(prop_type);
             bf->bit_offset(offset);
-            bf->bit_size(fbool->FieldSize);
+            bf->bit_size(fbool->GetFieldSize());
             // bf->field(prop_name)->size(fbool->FieldSize)->offset(offset);
 
             // Return early since we're done for bitfields.
@@ -342,8 +266,10 @@ void generate_fproperty(genny::Struct* s, FProperty* fprop) {
     }
 
     if (prop_type != nullptr) {
-        if (fprop->ArrayDim > 1) {
-            s->variable(prop_name)->type(prop_type->array_(fprop->ArrayDim))->offset(fprop->GetOffset_ForInternal());
+        if (fprop->GetArrayDim() > 1) {
+            s->variable(prop_name)
+                ->type(prop_type->array_(fprop->GetArrayDim()))
+                ->offset(fprop->GetOffset_ForInternal());
         } else {
             s->variable(prop_name)->type(prop_type)->offset(fprop->GetOffset_ForInternal());
         }
@@ -358,10 +284,10 @@ void generate_fproperty(genny::Struct* s, FProperty* fprop) {
 
 void generate_ufunction(genny::Struct* s, UFunction* ufunc) {
     auto ns = s->owner<genny::Namespace>();
-    auto func_name = narrow(ufunc->GetFName());
+    auto func_name = narrow(ufunc->GetNamePrivate());
     genny::Function* genny_func{};
 
-    if ((ufunc->FunctionFlags & FUNC_Static) != 0) {
+    if ((ufunc->GetFunctionFlags() & FUNC_Static) != 0) {
         genny_func = s->static_function(func_name);
     } else {
         genny_func = s->function(func_name);
@@ -372,11 +298,11 @@ void generate_ufunction(genny::Struct* s, UFunction* ufunc) {
     std::unordered_set<genny::Variable*> out_params{};
 
     // Add params.
-    for (auto field = ufunc->ChildProperties; field != nullptr; field = field->Next) {
+    for (auto field = ufunc->GetChildProperties(); field != nullptr; field = field->GetNextFieldAsProperty()) {
         if (field->IsA<FProperty>()) {
             auto fparam = (FProperty*)field;
-            auto param_flags = fparam->PropertyFlags;
-            auto param_name = narrow(fparam->NamePrivate);
+            auto param_flags = fparam->GetPropertyFlags();
+            auto param_name = narrow(fparam->GetName());
             auto param_type = genny_type_for_fproperty(ns, fparam);
 
             // Unknown parameter type (probably a soft object ptr or something we don't support) so just return early.
@@ -399,7 +325,7 @@ void generate_ufunction(genny::Struct* s, UFunction* ufunc) {
 
             auto params_param = param_struct->variable(param_name)->offset(fparam->GetOffset_ForInternal());
 
-            if (param_type->size() == fparam->ElementSize * fparam->ArrayDim) {
+            if (param_type->size() == fparam->GetElementSize() * fparam->GetArrayDim()) {
                 params_param->type(param_type);
             } else {
                 params_param->type(ns->type("uint8_t"));
@@ -457,7 +383,7 @@ void generate_ufunction(genny::Struct* s, UFunction* ufunc) {
 
 void generate_ustruct(genny::Struct* genny_struct, UStruct* ustruct) {
     auto ustruct_name = [](UStruct* ustruct) {
-        return kanan::narrow(ustruct->GetPrefixCPP()) + narrow(ustruct->GetFName());
+        return kanan::narrow(ustruct->GetPrefixCPP()) + narrow(ustruct->GetNamePrivate());
     };
     auto ns = genny_struct->owner<genny::Namespace>();
 
@@ -483,15 +409,15 @@ void generate_ustruct(genny::Struct* genny_struct, UStruct* ustruct) {
         }
     }
 
-    if (ustruct->PropertiesSize > genny_struct->size()) {
-        genny_struct->size(
-            ((ustruct->PropertiesSize + ustruct->MinAlignment - 1) / ustruct->MinAlignment) * ustruct->MinAlignment);
+    if (ustruct->GetPropertiesSize() > genny_struct->size()) {
+        genny_struct->size(((ustruct->GetPropertiesSize() + ustruct->GetMinAlignment() - 1) / ustruct->GetMinAlignment()) *
+                           ustruct->GetMinAlignment());
     }
 }
 
 void generate_ustruct_members(genny::Struct* genny_struct, UStruct* ustruct) {
     // Add properties.
-    for (auto field = ustruct->ChildProperties; field != nullptr; field = field->Next) {
+    for (auto field = ustruct->GetChildProperties(); field != nullptr; field = field->GetNextFieldAsProperty()) {
         if (field->IsA<FProperty>()) {
             generate_fproperty(genny_struct, (FProperty*)field);
         }
@@ -513,7 +439,7 @@ void generate_uclass_functions(genny::Struct* genny_struct, UClass* uclass) {
     static_class->procedure(os.str());
 
     // Add functions.
-    for (auto field = uclass->Children; field != nullptr; field = field->Next) {
+    for (auto field = uclass->GetChildren(); field != nullptr; field = field->GetNext()) {
         if (field->IsA<UFunction>()) {
             generate_ufunction(genny_struct, (UFunction*)field);
         }
@@ -550,10 +476,11 @@ void generate() {
     auto uobj = g->class_("UObject");
 
     auto ufunc = g->class_("UFunction");
-    auto uobj_process_event = uobj->virtual_function("ProcessEvent")->vtable_index(UOBJECT_PROCESSEVENT_INDEX);
-    uobj_process_event->param("Function")->type(ufunc->ptr());
-    uobj_process_event->param("Parms")->type(g->type("void")->ptr());
+    //auto uobj_process_event = uobj->virtual_function("ProcessEvent")->vtable_index(UOBJECT_PROCESSEVENT_INDEX);
+    //uobj_process_event->param("Function")->type(ufunc->ptr());
+    //uobj_process_event->param("Parms")->type(g->type("void")->ptr());
 
+    /*
     auto ustruct = g->class_("UStruct");
     ustruct->variable("SuperStruct")
         ->type(ustruct->ptr())
@@ -564,46 +491,48 @@ void generate() {
 
     uobj->variable("ClassPrivate")
         ->type(uclass->ptr())
-        ->offset(offsetof(UObjectBase, ClassPrivate)); // NOTE: Make ClassPrivate public.
-
+        ->offset(offsetof(UObject, ClassPrivate)); // NOTE: Make ClassPrivate public.
+    */
     g->type("FName")->size(sizeof(FName));
     g->type("FString")->size(sizeof(FString));
 
     std::unordered_map<genny::Struct*, UStruct*> struct_map{};
+    UObjectGlobals::ForEachUObject(
+        [&](void* untyped_object, [[maybe_unused]] int32_t chunk_index, [[maybe_unused]] int32_t object_index) { 
+            auto obj_item = untyped_object;
 
-    for (auto i = 0; i < get_GUObjectArray()->GetObjectArrayNum(); ++i) {
-        auto obj_item = get_GUObjectArray()->IndexToObject(i);
-
-        if (obj_item == nullptr) {
-            continue;
-        }
-
-        auto obj = obj_item->Object;
-
-        if (auto uenum = DCast<UEnum*>(obj)) {
-            generate_uenum(g, uenum);
-        } else if (auto ustruct = DCast<UStruct*>(obj)) {
-            // Skip functions and blueprints for now.
-            if (ustruct->IsA<UFunction>() /*|| ustruct->IsA<UBlueprintGeneratedClass>()*/) {
-                continue;
+            if (obj_item == nullptr) {
+                return LoopAction::Continue;
             }
 
-            auto name = kanan::narrow(ustruct->GetPrefixCPP()) + narrow(ustruct->GetFName());
-            genny::Struct* genny_struct{};
+            UObject* obj = static_cast<UObject*>(untyped_object);
 
-            if (ustruct->IsA<UClass>()) {
-                genny_struct = g->class_(name);
-            } else {
-                genny_struct = g->struct_(name);
+            if (auto uenum = Cast<UEnum>(obj)) {
+                generate_uenum(g, uenum);
+            } else if (auto ustruct = Cast<UStruct>(obj)) {
+                // Skip functions and blueprints for now.
+                if (ustruct->IsA<UFunction>() /*|| ustruct->IsA<UBlueprintGeneratedClass>()*/) {
+                    return LoopAction::Continue;
+                }
+
+                auto name = kanan::narrow(ustruct->GetPrefixCPP()) + narrow(ustruct->GetNamePrivate());
+                genny::Struct* genny_struct{};
+
+                if (ustruct->IsA<UClass>()) {
+                    genny_struct = g->class_(name);
+                } else {
+                    genny_struct = g->struct_(name);
+                }
+
+                if (name == "FTimespan" || name == "FFloatInterval" || name == "FInt32Interval")
+                    genny_struct->skip_generation(true);
+
+                generate_ustruct(genny_struct, ustruct);
+                struct_map.emplace(genny_struct, ustruct);
             }
-
-            if (name == "FTimespan" || name == "FFloatInterval" || name == "FInt32Interval")
-                genny_struct->skip_generation(true);
-
-            generate_ustruct(genny_struct, ustruct);
-            struct_map.emplace(genny_struct, ustruct);
-        }
-    }
+            
+            return LoopAction::Continue;
+        });
 
     for (auto&& [genny_struct, ustruct] : struct_map) {
         generate_ustruct_members(genny_struct, ustruct);
